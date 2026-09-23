@@ -1,0 +1,16 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+app/build/
+.android-cli-extract/
+.gradle-bootstrap/
+commandlinetools-win.zip
+gradle-8.11.1-bin.zip
+*.jks
+*.keystore
+keystore.properties

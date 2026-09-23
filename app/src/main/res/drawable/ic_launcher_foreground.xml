@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Deep teal Material-style container. -->
+    <path
+        android:fillColor="#006A6A"
+        android:pathData="M34,10h40c13.25,0 24,10.75 24,24v40c0,13.25 -10.75,24 -24,24h-40c-13.25,0 -24,-10.75 -24,-24v-40c0,-13.25 10.75,-24 24,-24z" />
+    <!-- A calm 3 × 3 timetable grid with generous rounded spacing. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M29,27h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM49,27h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM69,27h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM29,47h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM69,47h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM29,67h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM49,67h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3zM69,67h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3z" />
+    <path
+        android:fillColor="#80CBC4"
+        android:pathData="M49,47h10q3,0 3,3v10q0,3 -3,3h-10q-3,0 -3,-3v-10q0,-3 3,-3z" />
+</vector>

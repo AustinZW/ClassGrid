@@ -2027,7 +2027,7 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            "版本 0.1.0 · net.yeeren.classgrid",
+                            "版本 1.0.0 · net.yeeren.classgrid",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

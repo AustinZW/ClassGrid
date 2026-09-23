@@ -24,7 +24,7 @@ object ClassGridBackupCodec {
             .put("format", FORMAT_NAME)
             .put("formatVersion", FORMAT_VERSION)
             .put("exportedAt", Instant.now().toString())
-            .put("appVersion", "0.1.0")
+            .put("appVersion", "1.0.0")
             .put("settings", encodeSettings(settings))
         val courseArray = JSONArray()
         courses.forEach { item ->

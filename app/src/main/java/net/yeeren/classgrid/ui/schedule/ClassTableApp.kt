@@ -46,6 +46,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.SaveAlt
@@ -55,6 +56,8 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -110,14 +113,19 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.yeeren.classgrid.BuildConfig
 import net.yeeren.classgrid.MainViewModel
 import net.yeeren.classgrid.data.CourseSlotEntity
 import net.yeeren.classgrid.data.CourseWithSlots
 import net.yeeren.classgrid.data.ScheduleDefaults
+import net.yeeren.classgrid.data.ScheduleOverrideEntity
+import net.yeeren.classgrid.data.ScheduleOverrideRules
+import net.yeeren.classgrid.data.ScheduleProjection
 import net.yeeren.classgrid.data.SectionTime
 import net.yeeren.classgrid.data.SemesterSettings
 import net.yeeren.classgrid.data.WeekRules
 import net.yeeren.classgrid.data.asIndependentCopy
+import net.yeeren.classgrid.ui.share.ShareScreen
 import net.yeeren.classgrid.data.ClassGridBackup
 import net.yeeren.classgrid.data.ClassGridBackupCodec
 import net.yeeren.classgrid.data.DhuImportResult
@@ -127,6 +135,7 @@ import java.io.ByteArrayOutputStream
 import java.time.LocalDate
 import java.time.DayOfWeek
 import java.time.YearMonth
+import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -143,12 +152,20 @@ private val courseColors = listOf(
 
 private data class ScheduledCourse(
     val course: CourseWithSlots,
-    val slot: CourseSlotEntity
+    val slot: CourseSlotEntity,
+    val displayDayOfWeek: Int,
+    val isOverride: Boolean
+)
+
+private data class CourseViewRequest(
+    val course: CourseWithSlots,
+    val readOnly: Boolean
 )
 
 private data class CourseAdjustment(
     val course: CourseWithSlots,
     val originalSlot: CourseSlotEntity,
+    val displayDay: Int,
     val day: Int,
     val startSection: Int,
     val endSection: Int,
@@ -175,7 +192,7 @@ fun ClassTableApp(viewModel: MainViewModel) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var viewingCourse by remember { mutableStateOf<CourseWithSlots?>(null) }
+    var viewingCourse by remember { mutableStateOf<CourseViewRequest?>(null) }
     var editingCourse by remember { mutableStateOf<CourseWithSlots?>(null) }
     var copyingCourse by remember { mutableStateOf<CourseWithSlots?>(null) }
     var newCourseSlot by remember { mutableStateOf<Pair<Int, Int>?>(null) }
@@ -190,6 +207,8 @@ fun ClassTableApp(viewModel: MainViewModel) {
     var deferredNewTimetable by remember { mutableStateOf<NewTimetableRequest?>(null) }
     var dhuConflictRequest by remember { mutableStateOf<DhuConflictRequest?>(null) }
     var selectedConflictCourses by remember { mutableStateOf(setOf<String>()) }
+    var showScheduleOverrides by remember { mutableStateOf(false) }
+    var showShare by remember { mutableStateOf(false) }
 
     fun completeNewTimetable(request: NewTimetableRequest) {
         val onResult: (Result<Unit>) -> Unit = { result ->
@@ -211,6 +230,7 @@ fun ClassTableApp(viewModel: MainViewModel) {
                 result = imported,
                 replaceCurrent = true,
                 newTimetableName = request.suggestedName,
+                clearScheduleOverrides = true,
                 onResult = onResult
             )
         } ?: viewModel.createEmptyTimetable(request.suggestedName, onResult)
@@ -323,11 +343,12 @@ fun ClassTableApp(viewModel: MainViewModel) {
             totalWeeks = state.settings.totalWeeks,
             settings = state.settings,
             courses = state.courses,
+            scheduleOverrides = state.scheduleOverrides,
             onWeekSelected = viewModel::selectWeek,
             onCurrentWeek = viewModel::goToCurrentWeek,
             onAdd = { newCourseSlot = (state.settings.visibleDays.minOrNull() ?: 1) to 1 },
             onEmptySlotClick = { day, section -> newCourseSlot = day to section },
-            onCourseClick = { viewingCourse = it },
+            onCourseClick = { course, readOnly -> viewingCourse = CourseViewRequest(course, readOnly) },
             onCourseCopy = { copyingCourse = it.asIndependentCopy() },
             onCourseAdjust = viewModel::adjustCourseSlot,
             canAdjustCourse = viewModel::canAdjustCourseSlot,
@@ -337,9 +358,15 @@ fun ClassTableApp(viewModel: MainViewModel) {
             onImport = { importLauncher.launch(arrayOf("*/*")) },
             onDhuImport = { showDhuImport = true },
             onNewTimetable = { newTimetableRequest = NewTimetableRequest() },
+            onScheduleOverrides = { showScheduleOverrides = true },
+            onShare = { showShare = true },
             onExport = {
                 runCatching {
-                    ClassGridBackupCodec.encode(state.settings, state.courses)
+                    ClassGridBackupCodec.encode(
+                        state.settings,
+                        state.courses,
+                        state.scheduleOverrides
+                    )
                 }.onSuccess { content ->
                     exportContent = content
                     exportLauncher.launch("ClassGrid-${LocalDate.now()}.cgf")
@@ -351,13 +378,34 @@ fun ClassTableApp(viewModel: MainViewModel) {
         )
     }
 
-    viewingCourse?.let { course ->
+    if (showScheduleOverrides) {
+        ScheduleOverrideDialog(
+            settings = state.settings,
+            overrides = state.scheduleOverrides,
+            onDismiss = { showScheduleOverrides = false },
+            onSave = viewModel::saveScheduleOverride,
+            onDelete = viewModel::deleteScheduleOverride
+        )
+    }
+
+    if (showShare) {
+        ShareScreen(
+            week = state.selectedWeek,
+            settings = state.settings,
+            courses = state.courses,
+            overrides = state.scheduleOverrides,
+            onClose = { showShare = false }
+        )
+    }
+
+    viewingCourse?.let { request ->
         CourseDetailsDialog(
-            course = course,
+            course = request.course,
+            canEdit = !request.readOnly,
             onDismiss = { viewingCourse = null },
             onEdit = {
                 viewingCourse = null
-                editingCourse = course
+                editingCourse = request.course
             }
         )
     }
@@ -489,7 +537,11 @@ fun ClassTableApp(viewModel: MainViewModel) {
                             val namedRequest = request.copy(suggestedName = timetableName.trim())
                             newTimetableRequest = null
                             runCatching {
-                                ClassGridBackupCodec.encode(state.settings, state.courses)
+                                ClassGridBackupCodec.encode(
+                                    state.settings,
+                                    state.courses,
+                                    state.scheduleOverrides
+                                )
                             }.onSuccess { content ->
                                 deferredNewTimetable = namedRequest
                                 exportContent = content
@@ -683,11 +735,12 @@ private fun ScheduleHome(
     totalWeeks: Int,
     settings: SemesterSettings,
     courses: List<CourseWithSlots>,
+    scheduleOverrides: List<ScheduleOverrideEntity>,
     onWeekSelected: (Int) -> Unit,
     onCurrentWeek: () -> Unit,
     onAdd: () -> Unit,
     onEmptySlotClick: (Int, Int) -> Unit,
-    onCourseClick: (CourseWithSlots) -> Unit,
+    onCourseClick: (CourseWithSlots, Boolean) -> Unit,
     onCourseCopy: (CourseWithSlots) -> Unit,
     onCourseAdjust: (CourseWithSlots, CourseSlotEntity, Int, Int, Int, Int?) -> Boolean,
     canAdjustCourse: (CourseWithSlots, CourseSlotEntity, Int, Int, Int, Int?) -> Boolean,
@@ -695,6 +748,8 @@ private fun ScheduleHome(
     onImport: () -> Unit,
     onDhuImport: () -> Unit,
     onNewTimetable: () -> Unit,
+    onScheduleOverrides: () -> Unit,
+    onShare: () -> Unit,
     onExport: () -> Unit,
     onSettingsSelected: (SettingsPage) -> Unit
 ) {
@@ -745,6 +800,8 @@ private fun ScheduleHome(
                             onImport = onImport,
                             onDhuImport = onDhuImport,
                             onNewTimetable = onNewTimetable,
+                            onScheduleOverrides = onScheduleOverrides,
+                            onShare = onShare,
                             onExport = onExport
                         )
                     }
@@ -769,11 +826,27 @@ private fun ScheduleHome(
                 modifier = Modifier.fillMaxSize()
             ) { page ->
                 val pageWeek = page + 1
-                val pageCourses = remember(courses, pageWeek, settings.visibleDays) {
-                    courses.flatMap { course ->
-                        course.slots
-                            .filter { it.isActiveIn(pageWeek) && it.dayOfWeek in settings.visibleDays }
-                            .map { ScheduledCourse(course, it) }
+                val projectedDays = remember(courses, pageWeek, scheduleOverrides, settings) {
+                    ScheduleProjection.forWeek(pageWeek, settings, courses, scheduleOverrides)
+                }
+                val pageOverrides = remember(projectedDays, scheduleOverrides) {
+                    scheduleOverrides.filter { override ->
+                        projectedDays.any { it.date == override.targetDate && it.isOverride }
+                    }.associateBy { it.targetDate.dayOfWeek.value }
+                }
+                val shownDays = remember(projectedDays) {
+                    projectedDays.map { it.date.dayOfWeek.value }.toSet()
+                }
+                val pageCourses = remember(projectedDays) {
+                    projectedDays.flatMap { day ->
+                        day.courses.map { projected ->
+                            ScheduledCourse(
+                                course = projected.course,
+                                slot = projected.slot,
+                                displayDayOfWeek = projected.displayDate.dayOfWeek.value,
+                                isOverride = projected.isOverride
+                            )
+                        }
                     }
                 }
                 Box(Modifier.fillMaxSize()) {
@@ -782,7 +855,8 @@ private fun ScheduleHome(
                             courses = pageCourses,
                             week = pageWeek,
                             startDate = settings.startDate,
-                            visibleDays = settings.visibleDays,
+                            visibleDays = shownDays,
+                            scheduleOverrides = pageOverrides,
                             sectionTimes = settings.sectionTimes,
                             slotHeight = settings.courseCellHeightDp.dp,
                             titleFontScale = settings.courseTitleFontScale,
@@ -795,7 +869,7 @@ private fun ScheduleHome(
                             onCourseConflict = onCourseConflict,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(54.dp + settings.courseCellHeightDp.dp * settings.sectionTimes.size + 96.dp)
+                                .height(64.dp + settings.courseCellHeightDp.dp * settings.sectionTimes.size + 96.dp)
                         )
                     }
                     if (pageCourses.isEmpty()) {
@@ -843,6 +917,8 @@ private fun SettingsMenuButton(
     onImport: () -> Unit,
     onDhuImport: () -> Unit,
     onNewTimetable: () -> Unit,
+    onScheduleOverrides: () -> Unit,
+    onShare: () -> Unit,
     onExport: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -867,6 +943,22 @@ private fun SettingsMenuButton(
                     }
                 )
             }
+            DropdownMenuItem(
+                text = { Text("调休安排") },
+                leadingIcon = { Icon(Icons.Default.SwapHoriz, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onScheduleOverrides()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("分享课表") },
+                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onShare()
+                }
+            )
             HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("新建课表") },
@@ -927,12 +1019,13 @@ private fun Timetable(
     week: Int,
     startDate: LocalDate,
     visibleDays: Set<Int>,
+    scheduleOverrides: Map<Int, ScheduleOverrideEntity>,
     sectionTimes: List<SectionTime>,
     slotHeight: Dp,
     titleFontScale: Float,
     detailFontScale: Float,
     onEmptySlotClick: (Int, Int) -> Unit,
-    onCourseClick: (CourseWithSlots) -> Unit,
+    onCourseClick: (CourseWithSlots, Boolean) -> Unit,
     onCourseCopy: (CourseWithSlots) -> Unit,
     onCourseAdjust: (CourseWithSlots, CourseSlotEntity, Int, Int, Int, Int?) -> Boolean,
     canAdjustCourse: (CourseWithSlots, CourseSlotEntity, Int, Int, Int, Int?) -> Boolean,
@@ -973,12 +1066,13 @@ private fun Timetable(
         val dayWidth = (maxWidth - timeWidth) / shownDays.size.toFloat()
         Column(Modifier.fillMaxSize().padding(bottom = 96.dp)) {
             Row {
-                Spacer(Modifier.width(timeWidth).height(54.dp))
+                Spacer(Modifier.width(timeWidth).height(64.dp))
                 shownDays.forEach { day ->
                     val date = startDate.plusDays(((week - 1) * 7L) + day - 1L)
+                    val scheduleOverride = scheduleOverrides[day]
                     val isToday = date == LocalDate.now()
                     Box(
-                        Modifier.width(dayWidth).height(54.dp).padding(horizontal = 2.dp, vertical = 3.dp)
+                        Modifier.width(dayWidth).height(64.dp).padding(horizontal = 2.dp, vertical = 3.dp)
                     ) {
                         Surface(
                             modifier = Modifier.fillMaxSize(),
@@ -1007,6 +1101,13 @@ private fun Timetable(
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     }
                                 )
+                                scheduleOverride?.let {
+                                    Text(
+                                        "按 ${it.sourceDate.monthValue}/${it.sourceDate.dayOfMonth}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
                         }
                     }
@@ -1039,7 +1140,9 @@ private fun Timetable(
                                         .width(dayWidth)
                                         .height(slotHeight)
                                         .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                                        .clickable { onEmptySlotClick(day, section) }
+                                        .clickable(enabled = day !in scheduleOverrides) {
+                                            onEmptySlotClick(day, section)
+                                        }
                                 )
                             }
                         }
@@ -1061,7 +1164,8 @@ private fun Timetable(
                 courses.forEach { course ->
                     val activeAdjustment = adjustment?.takeIf {
                         it.course.course.id == course.course.course.id &&
-                            it.originalSlot.id == course.slot.id
+                            it.originalSlot.id == course.slot.id &&
+                            it.displayDay == course.displayDayOfWeek
                     }
                     val displayedSlot = activeAdjustment?.let {
                         course.slot.copy(
@@ -1069,9 +1173,12 @@ private fun Timetable(
                             startSection = it.startSection,
                             endSection = it.endSection
                         )
-                    } ?: course.slot
-                    val displayedCourse = course.copy(slot = displayedSlot)
-                    val dayIndex = shownDays.indexOf(displayedSlot.dayOfWeek)
+                    } ?: course.slot.copy(dayOfWeek = course.displayDayOfWeek)
+                    val displayedCourse = course.copy(
+                        slot = displayedSlot,
+                        displayDayOfWeek = displayedSlot.dayOfWeek
+                    )
+                    val dayIndex = shownDays.indexOf(displayedCourse.displayDayOfWeek)
                     if (dayIndex >= 0) {
                         CourseBlock(
                             scheduled = displayedCourse,
@@ -1085,7 +1192,8 @@ private fun Timetable(
                             sectionCount = sectionTimes.size,
                             isAdjusting = activeAdjustment != null,
                             adjustmentControlsVisible = activeAdjustment != null && !adjustmentSaving,
-                            onClick = { onCourseClick(course.course) },
+                            readOnly = course.isOverride,
+                            onClick = { onCourseClick(course.course, course.isOverride) },
                             onMove = { day, section ->
                                 val span = course.slot.endSection - course.slot.startSection
                                 val endSection = section + span
@@ -1100,6 +1208,7 @@ private fun Timetable(
                                     adjustment = CourseAdjustment(
                                         course = course.course,
                                         originalSlot = course.slot,
+                                        displayDay = course.displayDayOfWeek,
                                         day = day,
                                         startSection = section,
                                         endSection = endSection,
@@ -1264,6 +1373,7 @@ private fun EmptyWeekState(
 @Composable
 private fun CourseDetailsDialog(
     course: CourseWithSlots,
+    canEdit: Boolean,
     onDismiss: () -> Unit,
     onEdit: () -> Unit
 ) {
@@ -1320,9 +1430,9 @@ private fun CourseDetailsDialog(
         confirmButton = {
             Button(onClick = onDismiss) { Text("关闭") }
         },
-        dismissButton = {
-            TextButton(onClick = onEdit) { Text("编辑") }
-        }
+        dismissButton = if (canEdit) {
+            { TextButton(onClick = onEdit) { Text("编辑") } }
+        } else null
     )
 }
 
@@ -1339,6 +1449,7 @@ private fun CourseBlock(
     sectionCount: Int,
     isAdjusting: Boolean,
     adjustmentControlsVisible: Boolean,
+    readOnly: Boolean,
     onClick: () -> Unit,
     onMove: (day: Int, startSection: Int) -> Unit,
     onResizeStart: (Int) -> Unit,
@@ -1354,8 +1465,54 @@ private fun CourseBlock(
     val dayWidthPx = with(density) { dayWidth.toPx() }
     val slotHeightPx = with(density) { slotHeight.toPx() }
     val dragThresholdPx = with(density) { 12.dp.toPx() }
-    var dragOffset by remember(scheduled.slot.id) { mutableStateOf(Offset.Zero) }
-    var isDragging by remember(scheduled.slot.id) { mutableStateOf(false) }
+    var dragOffset by remember(scheduled.slot.id, scheduled.displayDayOfWeek) {
+        mutableStateOf(Offset.Zero)
+    }
+    var isDragging by remember(scheduled.slot.id, scheduled.displayDayOfWeek) {
+        mutableStateOf(false)
+    }
+    val dragModifier = if (readOnly) {
+        Modifier
+    } else {
+        Modifier.pointerInput(
+            scheduled.slot.id,
+            scheduled.displayDayOfWeek,
+            shownDays,
+            sectionCount,
+            dayWidthPx,
+            slotHeightPx
+        ) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = {
+                    isDragging = true
+                    dragOffset = Offset.Zero
+                },
+                onDragCancel = {
+                    isDragging = false
+                    dragOffset = Offset.Zero
+                },
+                onDragEnd = {
+                    val moved = dragOffset.getDistance() >= dragThresholdPx
+                    val targetDayIndex = if (moved) {
+                        (dayIndex + (dragOffset.x / dayWidthPx).roundToInt())
+                            .coerceIn(shownDays.indices)
+                    } else dayIndex
+                    val maxStart = (sectionCount - span + 1).coerceAtLeast(1)
+                    val targetSection = if (moved) {
+                        (slot.startSection + (dragOffset.y / slotHeightPx).roundToInt())
+                            .coerceIn(1, maxStart)
+                    } else slot.startSection
+                    onMove(shownDays[targetDayIndex], targetSection)
+                    isDragging = false
+                    dragOffset = Offset.Zero
+                },
+                onDrag = { change, amount ->
+                    change.consume()
+                    dragOffset += amount
+                }
+            )
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -1381,43 +1538,7 @@ private fun CourseBlock(
             modifier = Modifier
                 .fillMaxSize()
                 .clickable(onClick = onClick)
-                .pointerInput(
-                    scheduled.slot.id,
-                    shownDays,
-                    sectionCount,
-                    dayWidthPx,
-                    slotHeightPx
-                ) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = {
-                            isDragging = true
-                            dragOffset = Offset.Zero
-                        },
-                        onDragCancel = {
-                            isDragging = false
-                            dragOffset = Offset.Zero
-                        },
-                        onDragEnd = {
-                            val moved = dragOffset.getDistance() >= dragThresholdPx
-                            val targetDayIndex = if (moved) {
-                                (dayIndex + (dragOffset.x / dayWidthPx).roundToInt())
-                                    .coerceIn(shownDays.indices)
-                            } else dayIndex
-                            val maxStart = (sectionCount - span + 1).coerceAtLeast(1)
-                            val targetSection = if (moved) {
-                                (slot.startSection + (dragOffset.y / slotHeightPx).roundToInt())
-                                    .coerceIn(1, maxStart)
-                            } else slot.startSection
-                            onMove(shownDays[targetDayIndex], targetSection)
-                            isDragging = false
-                            dragOffset = Offset.Zero
-                        },
-                        onDrag = { change, amount ->
-                            change.consume()
-                            dragOffset += amount
-                        }
-                    )
-                },
+                .then(dragModifier),
             colors = CardDefaults.cardColors(
                 containerColor = background,
                 contentColor = Color.White
@@ -1425,6 +1546,14 @@ private fun CourseBlock(
             shape = RoundedCornerShape(10.dp)
         ) {
             Column(Modifier.padding(6.dp)) {
+                if (scheduled.isOverride) {
+                    Text(
+                        "调休",
+                        fontSize = 8.sp,
+                        lineHeight = 9.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
                 Text(
                     course.name,
                     fontWeight = FontWeight.Bold,
@@ -2027,7 +2156,7 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            "版本 1.0.0 · net.yeeren.classgrid",
+                            "版本 ${BuildConfig.VERSION_NAME} · ${BuildConfig.APPLICATION_ID}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2183,6 +2312,240 @@ private fun CourseAppearancePreview(
         }
     }
 
+}
+
+@Composable
+private fun ScheduleOverrideDialog(
+    settings: SemesterSettings,
+    overrides: List<ScheduleOverrideEntity>,
+    onDismiss: () -> Unit,
+    onSave: (LocalDate, LocalDate) -> Boolean,
+    onDelete: (ScheduleOverrideEntity) -> Unit
+) {
+    val semesterEnd = ScheduleOverrideRules.semesterEnd(settings.startDate, settings.totalWeeks)
+    val initialTarget = LocalDate.now().let { today ->
+        when {
+            today.isBefore(settings.startDate) -> settings.startDate
+            today.isAfter(semesterEnd) -> semesterEnd
+            else -> today
+        }
+    }
+    var targetDate by remember(settings.startDate, settings.totalWeeks) {
+        mutableStateOf(initialTarget)
+    }
+    var sourceDate by remember(settings.startDate, settings.totalWeeks) {
+        mutableStateOf(
+            if (initialTarget.isBefore(semesterEnd)) initialTarget.plusDays(1)
+            else initialTarget.minusDays(1)
+        )
+    }
+    var pickingTarget by remember { mutableStateOf<Boolean?>(null) }
+    val valid = targetDate != sourceDate
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("调休安排") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "将目标日期的课程换成选定日期的。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("选定日期", style = MaterialTheme.typography.labelMedium)
+                        OutlinedButton(
+                            onClick = { pickingTarget = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("${sourceDate.monthValue}月${sourceDate.dayOfMonth}日") }
+                    }
+                    Text(
+                        "→",
+                        modifier = Modifier.padding(bottom = 8.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("目标日期", style = MaterialTheme.typography.labelMedium)
+                        OutlinedButton(
+                            onClick = { pickingTarget = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("${targetDate.monthValue}月${targetDate.dayOfMonth}日") }
+                    }
+                }
+                if (!valid) {
+                    Text(
+                        "选定日期与目标日期不能相同",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                if (overrides.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text("已有安排", style = MaterialTheme.typography.titleMedium)
+                    overrides.sortedBy { it.targetDate }.forEach { override ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f).padding(vertical = 10.dp)) {
+                                    Text(
+                                        formatScheduleDate(override.targetDate, settings.startDate),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        "换成 ${formatScheduleDate(override.sourceDate, settings.startDate)} 的课表",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(onClick = { onDelete(override) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "删除调休安排")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = valid,
+                onClick = { onSave(targetDate, sourceDate) }
+            ) { Text(if (overrides.any { it.targetDate == targetDate }) "更新" else "保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
+
+    pickingTarget?.let { selectingTarget ->
+        SemesterDatePickerDialog(
+            title = if (selectingTarget) "选择目标日期" else "选定日期",
+            initialDate = if (selectingTarget) targetDate else sourceDate,
+            minDate = settings.startDate,
+            maxDate = semesterEnd,
+            onDismiss = { pickingTarget = null },
+            onConfirm = { selected ->
+                if (selectingTarget) targetDate = selected else sourceDate = selected
+                pickingTarget = null
+            }
+        )
+    }
+}
+
+private fun formatScheduleDate(date: LocalDate, semesterStart: LocalDate): String {
+    val week = (ChronoUnit.DAYS.between(semesterStart, date) / 7L + 1L).toInt()
+    return "${date.monthValue}月${date.dayOfMonth}日 · 第${week}周 · ${dayNames[date.dayOfWeek.value - 1]}"
+}
+
+@Composable
+private fun SemesterDatePickerDialog(
+    title: String,
+    initialDate: LocalDate,
+    minDate: LocalDate,
+    maxDate: LocalDate,
+    onDismiss: () -> Unit,
+    onConfirm: (LocalDate) -> Unit
+) {
+    var selectedDate by remember(initialDate) { mutableStateOf(initialDate) }
+    var displayedMonth by remember(initialDate) { mutableStateOf(YearMonth.from(initialDate)) }
+    val firstOfMonth = displayedMonth.atDay(1)
+    val firstGridDate = firstOfMonth.minusDays((firstOfMonth.dayOfWeek.value - 1).toLong())
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp),
+            shape = RoundedCornerShape(28.dp),
+            tonalElevation = 6.dp
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(title, style = MaterialTheme.typography.headlineSmall)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        enabled = displayedMonth > YearMonth.from(minDate),
+                        onClick = { displayedMonth = displayedMonth.minusMonths(1) }
+                    ) { Icon(Icons.Default.ChevronLeft, contentDescription = "上个月") }
+                    Text(
+                        "${displayedMonth.year} 年 ${displayedMonth.monthValue} 月",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    IconButton(
+                        enabled = displayedMonth < YearMonth.from(maxDate),
+                        onClick = { displayedMonth = displayedMonth.plusMonths(1) }
+                    ) { Icon(Icons.Default.ChevronRight, contentDescription = "下个月") }
+                }
+                Row(Modifier.fillMaxWidth()) {
+                    dayNames.forEach { name ->
+                        Text(
+                            text = name.removePrefix("周"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+                repeat(6) { row ->
+                    Row(Modifier.fillMaxWidth()) {
+                        repeat(7) { column ->
+                            val date = firstGridDate.plusDays(row * 7L + column)
+                            val enabled = !date.isBefore(minDate) && !date.isAfter(maxDate)
+                            val selected = date == selectedDate
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .padding(2.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                                        else Color.Transparent
+                                    )
+                                    .clickable(enabled = enabled) { selectedDate = date },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = date.dayOfMonth.toString(),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = when {
+                                        !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
+                                        selected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                        date.month == displayedMonth.month -> MaterialTheme.colorScheme.onSurface
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Button(onClick = { onConfirm(selectedDate) }) { Text("确定") }
+                }
+            }
+        }
+    }
 }
 
 @Composable

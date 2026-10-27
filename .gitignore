@@ -1,5 +1,6 @@
 *.iml
 .gradle/
+.kotlin/
 .idea/
 local.properties
 build/
@@ -14,4 +15,8 @@ commandlinetools-win.zip
 gradle-8.11.1-bin.zip
 *.jks
 *.keystore
+*.p12
+*.pfx
 keystore.properties
+AGENTS.md
+docs/

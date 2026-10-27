@@ -4,12 +4,19 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [CourseEntity::class, CourseSlotEntity::class], version = 2, exportSchema = true)
+@Database(
+    entities = [CourseEntity::class, CourseSlotEntity::class, ScheduleOverrideEntity::class],
+    version = 3,
+    exportSchema = true
+)
+@TypeConverters(DateConverters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun courseDao(): CourseDao
+    abstract fun scheduleOverrideDao(): ScheduleOverrideDao
 
     companion object {
         private val migration1To2 = object : Migration(1, 2) {
@@ -57,10 +64,24 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val migration2To3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS schedule_overrides (
+                        targetDate INTEGER NOT NULL,
+                        sourceDate INTEGER NOT NULL,
+                        PRIMARY KEY(targetDate)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun create(context: Context): AppDatabase = Room.databaseBuilder(
             context.applicationContext,
             AppDatabase::class.java,
             "class-table.db"
-        ).addMigrations(migration1To2).build()
+        ).addMigrations(migration1To2, migration2To3).build()
     }
 }

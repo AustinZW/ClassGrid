@@ -7,7 +7,8 @@ import org.json.JSONObject
 
 data class ClassGridBackup(
     val settings: SemesterSettings,
-    val courses: List<CourseWithSlots>
+    val courses: List<CourseWithSlots>,
+    val scheduleOverrides: List<ScheduleOverrideEntity> = emptyList()
 )
 
 object ClassGridBackupCodec {
@@ -15,11 +16,15 @@ object ClassGridBackupCodec {
     const val MIME_TYPE = "application/vnd.classgrid.backup+json"
     const val MAX_FILE_BYTES = 5 * 1024 * 1024
     private const val FORMAT_NAME = "classgrid-file"
-    private const val FORMAT_VERSION = 1
+    private const val FORMAT_VERSION = 2
     private const val MAX_COURSES = 2_000
     private const val MAX_SLOTS = 10_000
 
-    fun encode(settings: SemesterSettings, courses: List<CourseWithSlots>): String {
+    fun encode(
+        settings: SemesterSettings,
+        courses: List<CourseWithSlots>,
+        scheduleOverrides: List<ScheduleOverrideEntity> = emptyList()
+    ): String {
         val root = JSONObject()
             .put("format", FORMAT_NAME)
             .put("formatVersion", FORMAT_VERSION)
@@ -48,7 +53,18 @@ object ClassGridBackupCodec {
                     .put("slots", slots)
             )
         }
-        return root.put("courses", courseArray).toString(2)
+        val overrideArray = JSONArray()
+        scheduleOverrides.sortedBy { it.targetDate }.forEach { override ->
+            overrideArray.put(
+                JSONObject()
+                    .put("targetDate", override.targetDate.toString())
+                    .put("sourceDate", override.sourceDate.toString())
+            )
+        }
+        return root
+            .put("courses", courseArray)
+            .put("scheduleOverrides", overrideArray)
+            .toString(2)
     }
 
     fun decode(content: String): ClassGridBackup {
@@ -57,6 +73,11 @@ object ClassGridBackupCodec {
         val version = root.getInt("formatVersion")
         require(version in 1..FORMAT_VERSION) { "不支持的备份格式版本：$version" }
         val settings = decodeSettings(root.getJSONObject("settings"))
+        val scheduleOverrides = if (version >= 2) {
+            decodeScheduleOverrides(root.getJSONArray("scheduleOverrides"), settings)
+        } else {
+            emptyList()
+        }
         val sourceCourses = root.getJSONArray("courses")
         require(sourceCourses.length() <= MAX_COURSES) { "课程数量超出限制" }
         var slotCount = 0
@@ -113,7 +134,40 @@ object ClassGridBackupCodec {
                 )
             }
         }
-        return ClassGridBackup(settings = settings, courses = courses)
+        return ClassGridBackup(
+            settings = settings,
+            courses = courses,
+            scheduleOverrides = scheduleOverrides
+        )
+    }
+
+    private fun decodeScheduleOverrides(
+        source: JSONArray,
+        settings: SemesterSettings
+    ): List<ScheduleOverrideEntity> {
+        require(source.length() <= settings.totalWeeks * 7) { "调休安排数量超出限制" }
+        val seenTargets = mutableSetOf<LocalDate>()
+        return buildList {
+            repeat(source.length()) { index ->
+                val item = source.getJSONObject(index)
+                val targetDate = LocalDate.parse(item.getString("targetDate"))
+                val sourceDate = LocalDate.parse(item.getString("sourceDate"))
+                require(targetDate != sourceDate) { "调休日期不能与来源日期相同" }
+                require(
+                    ScheduleOverrideRules.isInSemester(
+                        targetDate,
+                        settings.startDate,
+                        settings.totalWeeks
+                    ) && ScheduleOverrideRules.isInSemester(
+                        sourceDate,
+                        settings.startDate,
+                        settings.totalWeeks
+                    )
+                ) { "调休日期超出学期范围" }
+                require(seenTargets.add(targetDate)) { "调休目标日期重复" }
+                add(ScheduleOverrideEntity(targetDate, sourceDate))
+            }
+        }
     }
 
     private fun encodeSettings(settings: SemesterSettings): JSONObject {

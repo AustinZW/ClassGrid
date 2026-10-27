@@ -1,3 +1,21 @@
 <resources>
     <string name="app_name">课格</string>
+    <string name="next_class_widget">下一节课 · 简洁</string>
+    <string name="next_class_widget_wide">近期课程 · 横向</string>
+    <string name="next_class_widget_tall">今日课表 · 全天</string>
+    <string name="widget_preview_title">下一节课</string>
+    <string name="widget_preview_time">开始时间</string>
+    <string name="widget_preview_meta">日期 · 教室</string>
+    <string name="widget_preview_teacher">教师</string>
+    <string name="widget_preview_heading">接下来</string>
+    <string name="widget_preview_secondary">随后 · 另一节课</string>
+    <string name="widget_today_title">今日课表</string>
+    <string name="widget_today_empty">今天没有课</string>
+    <string name="widget_preview_day_date">今天 · 3 节课</string>
+    <string name="widget_preview_course_one">课程一</string>
+    <string name="widget_preview_course_two">课程二</string>
+    <string name="widget_preview_course_three">课程三</string>
+    <string name="widget_preview_time_one">08:00–09:45 · 教室</string>
+    <string name="widget_preview_time_two">10:00–11:45 · 教室</string>
+    <string name="widget_preview_time_three">14:00–15:45 · 教室</string>
 </resources>

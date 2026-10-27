@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import net.yeeren.classgrid.data.CourseWithSlots
 import net.yeeren.classgrid.data.CourseSlotEntity
 import net.yeeren.classgrid.data.ScheduleDefaults
+import net.yeeren.classgrid.data.ScheduleOverrideEntity
+import net.yeeren.classgrid.data.ScheduleOverrideRules
 import net.yeeren.classgrid.data.SemesterSettings
 import net.yeeren.classgrid.data.WeekRules
 import net.yeeren.classgrid.data.withMovedSlot
@@ -37,6 +39,7 @@ data class MainUiState(
         unifiedCourseFontScale = true,
         onboardingComplete = false
     ),
+    val scheduleOverrides: List<ScheduleOverrideEntity> = emptyList(),
     val selectedWeek: Int = 1
 )
 
@@ -47,12 +50,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState = combine(
         app.courseRepository.courses,
         app.settingsRepository.settings,
+        app.scheduleOverrideRepository.overrides,
         selectedWeek
-    ) { courses, settings, requestedWeek ->
+    ) { courses, settings, scheduleOverrides, requestedWeek ->
         MainUiState(
             isLoading = false,
             courses = courses.map { it.withMergedEquivalentSlots() },
             settings = settings,
+            scheduleOverrides = scheduleOverrides,
             selectedWeek = (requestedWeek ?: WeekRules.currentWeek(
                 settings.startDate,
                 LocalDate.now(),
@@ -156,14 +161,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveSettings(settings: SemesterSettings) {
         viewModelScope.launch {
             app.settingsRepository.save(settings)
+            app.scheduleOverrideRepository.deleteOutsideRange(
+                settings.startDate,
+                ScheduleOverrideRules.semesterEnd(settings.startDate, settings.totalWeeks)
+            )
             selectedWeek.value = selectedWeek.value?.coerceIn(1, settings.totalWeeks)
         }
+    }
+
+    fun saveScheduleOverride(targetDate: LocalDate, sourceDate: LocalDate): Boolean {
+        val settings = uiState.value.settings
+        if (targetDate == sourceDate) return false
+        if (!ScheduleOverrideRules.isInSemester(targetDate, settings.startDate, settings.totalWeeks)) {
+            return false
+        }
+        if (!ScheduleOverrideRules.isInSemester(sourceDate, settings.startDate, settings.totalWeeks)) {
+            return false
+        }
+        viewModelScope.launch {
+            app.scheduleOverrideRepository.save(ScheduleOverrideEntity(targetDate, sourceDate))
+        }
+        return true
+    }
+
+    fun deleteScheduleOverride(override: ScheduleOverrideEntity) {
+        viewModelScope.launch { app.scheduleOverrideRepository.delete(override) }
     }
 
     fun importBackup(backup: ClassGridBackup, onResult: (Result<Unit>) -> Unit) {
         viewModelScope.launch {
             val result = runCatching {
                 app.courseRepository.replaceAll(backup.courses)
+                app.scheduleOverrideRepository.replaceAll(backup.scheduleOverrides)
                 app.settingsRepository.save(backup.settings.copy(onboardingComplete = true))
                 selectedWeek.value = WeekRules.currentWeek(
                     backup.settings.startDate,
@@ -179,6 +208,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         result: DhuImportResult,
         replaceCurrent: Boolean,
         newTimetableName: String? = null,
+        clearScheduleOverrides: Boolean = false,
         onResult: (Result<Unit>) -> Unit
     ) {
         viewModelScope.launch {
@@ -201,6 +231,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     app.courseRepository.appendAll(accepted)
                 }
+                if (clearScheduleOverrides) app.scheduleOverrideRepository.clear()
                 val current = uiState.value.settings
                 val importedDays = accepted.flatMap { it.slots }.map { it.dayOfWeek }.toSet()
                 app.settingsRepository.save(
@@ -224,6 +255,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val operation = runCatching {
                 app.courseRepository.replaceAll(emptyList())
+                app.scheduleOverrideRepository.clear()
                 app.settingsRepository.save(
                     uiState.value.settings.copy(
                         name = name.trim().ifBlank { "新课表" },

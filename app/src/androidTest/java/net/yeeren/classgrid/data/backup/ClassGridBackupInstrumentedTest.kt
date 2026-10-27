@@ -44,7 +44,15 @@ class ClassGridBackupInstrumentedTest {
             )
         )
 
-        val decoded = ClassGridBackupCodec.decode(ClassGridBackupCodec.encode(settings, courses))
+        val overrides = listOf(
+            ScheduleOverrideEntity(
+                targetDate = LocalDate.of(2026, 10, 10),
+                sourceDate = LocalDate.of(2026, 9, 28)
+            )
+        )
+        val decoded = ClassGridBackupCodec.decode(
+            ClassGridBackupCodec.encode(settings, courses, overrides)
+        )
 
         assertEquals(settings, decoded.settings)
         assertEquals(1, decoded.courses.size)
@@ -52,6 +60,7 @@ class ClassGridBackupInstrumentedTest {
         assertEquals(0L, decoded.courses.single().course.id)
         assertEquals("1教101", decoded.courses.single().slots.single().location)
         assertEquals(0L, decoded.courses.single().slots.single().id)
+        assertEquals(overrides, decoded.scheduleOverrides)
     }
 
     @Test
